@@ -1,0 +1,7 @@
+node_modules/
+.env
+deploy/certs/
+server/backups/
+server/seed-data/catalog.json
+dist/
+*.log
