@@ -1,0 +1,242 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// משתמשים והרשאות
+// ---------------------------------------------------------------------------
+enum Role {
+  admin
+  users
+  management
+  guest
+}
+
+model User {
+  id            Int      @id @default(autoincrement())
+  username      String   @unique
+  passwordHash  String
+  role          Role     @default(users)
+  fullName      String?
+  mustChangePwd Boolean  @default(false)
+  isActive      Boolean  @default(true) // ביטול משתמש ללא מחיקה
+  lastLogin     DateTime? // חותמת חיבור אחרון
+  networkId     Int? // עבור קבוצת users — הרשת שאליה יש גישה (null = כל הרשתות)
+  network       Network? @relation(fields: [networkId], references: [id])
+  createdAt     DateTime @default(now())
+
+  assignedTasks Task[]     @relation("TaskAssignee")
+  taskNotes     TaskNote[]
+  raciEntries   RaciEntry[]
+}
+
+// ---------------------------------------------------------------------------
+// רשתות וסקרים
+// ---------------------------------------------------------------------------
+model Network {
+  id        Int      @id @default(autoincrement())
+  name      String   @unique
+  createdAt DateTime @default(now())
+  surveys   Survey[]
+  users     User[]
+}
+
+model Survey {
+  id        Int       @id @default(autoincrement())
+  name      String
+  version   Int       @default(1)
+  networkId Int
+  network   Network   @relation(fields: [networkId], references: [id], onDelete: Cascade)
+  parentId  Int? // הסקר שממנו שוכפלה הגרסה
+  description String? @db.Text // תיאור הגרסה
+  createdBy String?
+  createdAt DateTime  @default(now())
+  families  Family[]
+  controls  Control[]
+  kpiSnapshots KpiSnapshot[]
+
+  @@index([networkId])
+}
+
+// ---------------------------------------------------------------------------
+// משפחות ובקרות
+// ---------------------------------------------------------------------------
+model Family {
+  id        Int       @id @default(autoincrement())
+  surveyId  Int
+  survey    Survey    @relation(fields: [surveyId], references: [id], onDelete: Cascade)
+  code      String
+  name      String
+  order     Int       @default(0)
+  isCustom  Boolean   @default(false)
+  controls  Control[]
+
+  @@index([surveyId])
+}
+
+model Control {
+  id          Int     @id @default(autoincrement())
+  surveyId    Int
+  survey      Survey  @relation(fields: [surveyId], references: [id], onDelete: Cascade)
+  familyId    Int
+  family      Family  @relation(fields: [familyId], references: [id], onDelete: Cascade)
+
+  // זיהוי ופרטי בקרה
+  controlCode String? // זיהוי בקרה / מזהה
+  name        String
+  description String? @db.Text
+  domain      String? // תחום ברשת
+  isProcedural Boolean? // האם בקרה נהלית
+  executor    String? // גורם מבצע בארגון
+  targetLevel String? // רמת ערך יעד הבקרה
+  actualLevel String? // רמת יישום בפועל
+  nistSource  String?
+  isoMapping  String? @db.Text
+  csfMapping  String? @db.Text
+  notesImpl   String? @db.Text // דגשים ביישום
+  evidence    String? @db.Text // ראיות/הוכחות
+
+  // הערכת סיכון
+  threatScenario String? @db.Text // תרחיש איום/סיכון
+  probability    Int? // הסתברות 1-5
+  impact         Int? // השפעה 1-5
+  resProbability Int? // הסתברות שיורית
+  resImpact      Int? // השפעה שיורית
+
+  // מיטיגציה
+  mitigation     String? @db.Text // פעולות מיטיגציה
+  nistMitigation String? @db.Text // ייחוס NIST 800-53
+
+  // ניהול
+  status         String  @default("not_started") // not_started | in_progress | completed
+  dueDate        DateTime?
+  mgmtDecision   String? // reduce | transfer | accept | avoid
+  responsibleR   String? // מבצע (R)
+  notRelevant    Boolean @default(false) // החרגה מכל החישובים
+
+  // תקציב
+  budgetEstimate Float?
+  budgetCurrency String?  @default("ILS")
+  budgetNotes    String?  @db.Text
+  noCost         Boolean  @default(false) // הבקרה ללא עלות
+
+  // הערכת שעות עבודה
+  workHours      Float?
+  workHoursNotes String?  @db.Text
+
+  // מורכבות טיפול
+  complexity      String? // easy | medium | complex
+  complexityNotes String? @db.Text
+
+  isCustom    Boolean @default(false)
+  updatedAt   DateTime @updatedAt
+
+  tasks             Task[]
+  raciEntries       RaciEntry[]
+  mitigationActions MitigationAction[]
+
+  @@index([surveyId])
+  @@index([familyId])
+}
+
+// ---------------------------------------------------------------------------
+// פעולות מיטיגציה (צ'קליסט) — ביצוען מוריד את הסיכון הנוכחי מהמובנה לשיורי
+// ---------------------------------------------------------------------------
+// היסטוריית KPI — ציר זמן של ציון סיכון ממוצע והפחתת סיכון לאורך הזמן
+model KpiSnapshot {
+  id              Int      @id @default(autoincrement())
+  surveyId        Int
+  survey          Survey   @relation(fields: [surveyId], references: [id], onDelete: Cascade)
+  recordedAt      DateTime @default(now())
+  avgCurrent      Float
+  riskReductionPct Float
+
+  @@index([surveyId, recordedAt])
+}
+
+model MitigationAction {
+  id        Int      @id @default(autoincrement())
+  controlId Int
+  control   Control  @relation(fields: [controlId], references: [id], onDelete: Cascade)
+  text      String   @db.Text
+  done      Boolean  @default(false)
+  order     Int      @default(0)
+  createdAt DateTime @default(now())
+
+  @@index([controlId])
+}
+
+// ---------------------------------------------------------------------------
+// RACI
+// ---------------------------------------------------------------------------
+model RaciEntry {
+  id        Int     @id @default(autoincrement())
+  controlId Int
+  control   Control @relation(fields: [controlId], references: [id], onDelete: Cascade)
+  raci      String // R | A | C | I
+  userId    Int?
+  user      User?   @relation(fields: [userId], references: [id])
+  text      String? // מלל חופשי (אם לא משתמש מהרשימה)
+
+  @@index([controlId])
+}
+
+// ---------------------------------------------------------------------------
+// ניהול משימות
+// ---------------------------------------------------------------------------
+model Task {
+  id          Int      @id @default(autoincrement())
+  controlId   Int
+  control     Control  @relation(fields: [controlId], references: [id], onDelete: Cascade)
+  description String   @db.Text
+  assigneeId  Int?
+  assignee    User?    @relation("TaskAssignee", fields: [assigneeId], references: [id])
+  etaValue    Int? // הערכת זמן טיפול
+  etaUnit     String? // days | weeks | months | year
+  status      String   @default("open") // open | in_progress | closed
+  createdAt   DateTime @default(now())
+  notes       TaskNote[]
+
+  @@index([controlId])
+}
+
+model TaskNote {
+  id        Int      @id @default(autoincrement())
+  taskId    Int
+  task      Task     @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  userId    Int?
+  user      User?    @relation(fields: [userId], references: [id])
+  userName  String // נשמר גם כטקסט לתצוגה (חותמת)
+  text      String   @db.Text
+  createdAt DateTime @default(now())
+
+  @@index([taskId])
+}
+
+// ---------------------------------------------------------------------------
+// גיבויים
+// ---------------------------------------------------------------------------
+model Snapshot {
+  id        Int      @id @default(autoincrement())
+  label     String
+  type      String   @default("manual") // manual | scheduled
+  fileName  String
+  sizeBytes Int      @default(0)
+  createdAt DateTime @default(now())
+}
+
+// ---------------------------------------------------------------------------
+// יומן ביקורת
+// ---------------------------------------------------------------------------
+model AuditLog {
+  id        Int      @id @default(autoincrement())
+  userName  String?
+  action    String
+  detail    String?  @db.Text
+  createdAt DateTime @default(now())
+}

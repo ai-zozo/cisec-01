@@ -1,0 +1,75 @@
+name: ci-sec
+
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: cisec-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-cisec}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-cisec}
+    volumes:
+      - cisec_db_data:/var/lib/postgresql/data
+    networks:
+      - cisec_net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-cisec} -d ${POSTGRES_DB:-cisec}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build:
+      context: ./server
+    container_name: cisec-api
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-cisec}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-cisec}?schema=public
+      JWT_SECRET: ${JWT_SECRET}
+      ADMIN_DEFAULT_PASSWORD: ${ADMIN_DEFAULT_PASSWORD:-Aa123456}
+      SESSION_IDLE_MINUTES: ${SESSION_IDLE_MINUTES:-60}
+      NODE_ENV: production
+      PORT: 4000
+      BACKUP_CRON: ${BACKUP_CRON:-0 2 * * *}
+    volumes:
+      - cisec_backups:/app/backups
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - cisec_net
+
+  web:
+    build:
+      context: ./client
+    container_name: cisec-web
+    restart: unless-stopped
+    networks:
+      - cisec_net
+    depends_on:
+      - api
+
+  proxy:
+    image: nginx:1.27-alpine
+    container_name: cisec-proxy
+    restart: unless-stopped
+    ports:
+      - "11445:11445"
+    volumes:
+      - ./deploy/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./deploy/certs:/etc/nginx/certs:ro
+    depends_on:
+      - web
+      - api
+    networks:
+      - cisec_net
+
+volumes:
+  cisec_db_data:
+  cisec_backups:
+
+networks:
+  cisec_net:
+    name: cisec_net
+    driver: bridge
